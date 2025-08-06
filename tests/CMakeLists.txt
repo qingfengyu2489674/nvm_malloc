@@ -13,6 +13,11 @@ foreach(test_source ${test_sources})
     # 使用 ${CMAKE_PROJECT_NAME} 来链接主代码库，确保一致性
     target_link_libraries(${test_name} PRIVATE ${CMAKE_PROJECT_NAME} unity)
 
+    # 为了能 #include "src/**.c" 进行白盒测试，我们需要手动添加 src 目录
+    target_include_directories(${test_name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+
     # 4. 将可执行文件注册为一个 CTest 测试
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "nvmslab.h": "c",
+        "stdlib.h": "c"
+    }
+}
