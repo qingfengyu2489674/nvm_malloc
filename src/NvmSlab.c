@@ -93,11 +93,23 @@ void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
         return;
     }
 
-    // 检查双重释放
-    if (!IS_BIT_SET(self->bitmap, block_idx)) {
-        fprintf(stderr, "Warning: Double free detected for block index %u.\n", block_idx);
-        return;
-    }
+    // // 检查双重释放
+    // // 1. 首先检查权威记录（位图）
+    // if (!IS_BIT_SET(self->bitmap, block_idx)) {
+    //     fprintf(stderr, "Warning: Double free detected for block index %u.\n", block_idx);
+    //     return;
+    // }
+
+    // // 2. 然后检查缓存
+    // // 遍历当前缓存中的所有有效索引
+    // for (uint32_t i = 0; i < self->cache_count; ++i) {
+    //     uint32_t cache_index = (self->cache_head + i) % SLAB_CACHE_SIZE;
+    //     if (self->free_block_buffer[cache_index] == block_idx) {
+    //         // 如果在缓存中找到了这个索引，这也是双重释放
+    //         fprintf(stderr, "Warning: Double free on a block already in the free cache (index %u).\n", block_idx);
+    //         return;
+    //     }
+    // }
 
     if (self->allocated_block_count > 0) {
         self->allocated_block_count--;
