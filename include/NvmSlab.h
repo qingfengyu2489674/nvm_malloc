@@ -4,9 +4,6 @@
 #include <stdbool.h>
 #include "NvmDefs.h"
 
-#define SLAB_CACHE_SIZE (64)          // Slab本地缓存的大小
-#define SLAB_CACHE_BATCH_SIZE (SLAB_CACHE_SIZE / 2) // 批量填充/回填缓存的大小
-
 // NVM Slab元数据，管理一个内存块集合。
 typedef struct NvmSlab {
     

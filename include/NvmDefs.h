@@ -5,7 +5,14 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#define NVM_START_OFFSET  0
+
 #define NVM_SLAB_SIZE (2 * 1024 * 1024)  // 每个Slab的大小 (2MB)
+
+#define SLAB_CACHE_SIZE (64)          // Slab本地缓存的大小
+#define SLAB_CACHE_BATCH_SIZE (SLAB_CACHE_SIZE / 2) // 批量填充/回填缓存的大小
+
+#define INITIAL_HASHTABLE_CAPACITY 101  // 初始哈希表容量，素数有助于减少哈希冲突
 
 // 定义了内存分配的尺寸类别ID。
 typedef enum {

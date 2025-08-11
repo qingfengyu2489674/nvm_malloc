@@ -4,20 +4,7 @@
 #include "NvmDefs.h"
 #include "NvmSlab.h"
 
-// 哈希表节点，用于解决哈希冲突 (拉链法)。
-typedef struct SlabHashNode {
-    uint64_t             nvm_offset;   // Key: Slab的起始偏移量
-    NvmSlab*             slab_ptr;     // Value: 指向Slab元数据的指针
-    struct SlabHashNode* next;         // 指向冲突链中的下一个节点
-} SlabHashNode;
-
-// 用于映射 "NVM偏移量 -> Slab指针" 的哈希表。
-typedef struct SlabHashTable {
-    SlabHashNode** buckets;      // 哈希桶数组 (指针数组)
-    uint32_t       capacity;     // 哈希桶数组的容量
-    uint32_t       count;        // 当前存储的元素总数
-} SlabHashTable;
-
+typedef struct SlabHashTable SlabHashTable;
 
 // 创建并初始化哈希表
 SlabHashTable* slab_hashtable_create(uint32_t initial_capacity);
