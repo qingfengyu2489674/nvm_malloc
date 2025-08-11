@@ -205,3 +205,29 @@ static uint32_t drain_cache(NvmSlab* self) {
 
     return drained_count;
 }
+
+
+int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
+    // 1. 参数有效性检查
+    if (self == NULL) {
+        return -1;
+    }
+    if (block_idx >= self->total_block_count) {
+        // 块索引超出了此Slab的管理范围
+        return -1;
+    }
+
+    // 2. 检查位图，实现幂等性
+    //    只有当块当前是空闲时（位为0），才执行标记操作
+    if (!IS_BIT_SET(self->bitmap, block_idx)) {
+        
+        // 3. 标记位图
+        SET_BIT(self->bitmap, block_idx);
+        
+        // 4. 更新已分配块的计数
+        self->allocated_block_count++;
+    }
+    
+    // 如果块已经被标记过了（IS_BIT_SET返回true），则什么都不做，直接返回成功。
+    return 0;
+}

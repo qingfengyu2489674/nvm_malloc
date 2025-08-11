@@ -33,4 +33,6 @@ uint64_t space_manager_alloc_slab(FreeSpaceManager* manager);
 // 释放一个Slab大小的块，并将其归还给空闲链表
 void space_manager_free_slab(FreeSpaceManager* manager, uint64_t offset_to_free);
 
+int space_manager_alloc_at_offset(FreeSpaceManager* manager, uint64_t offset);
+
 #endif // NVM_SPACE_MANAGER_H

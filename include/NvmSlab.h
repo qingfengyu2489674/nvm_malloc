@@ -42,6 +42,9 @@ int nvm_slab_alloc(NvmSlab* self, uint32_t* out_block_idx);
 // 向Slab中释放一个块
 void nvm_slab_free(NvmSlab* self, uint32_t block_idx);
 
+
+int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx);
+
 // 检查Slab是否已满
 bool nvm_slab_is_full(const NvmSlab* self);
 

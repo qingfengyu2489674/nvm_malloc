@@ -26,4 +26,7 @@ uint64_t nvm_malloc(NvmAllocator* allocator, size_t size);
 // 释放指定的NVM内存
 void nvm_free(NvmAllocator* allocator, uint64_t nvm_offset);
 
+// 恢复一个之前已分配的内存块
+uint64_t nvm_allocator_restore_allocation(NvmAllocator* allocator, uint64_t nvm_offset, size_t size);
+
 #endif // NVM_ALLOCATOR_H

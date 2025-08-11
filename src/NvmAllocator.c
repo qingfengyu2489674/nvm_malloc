@@ -187,3 +187,42 @@ static void remove_slab_from_list(NvmSlab** list_head, NvmSlab* slab_to_remove) 
         current->next_in_chain = slab_to_remove->next_in_chain;
     }
 }
+
+
+uint64_t nvm_allocator_restore_allocation(NvmAllocator* allocator, uint64_t nvm_offset, size_t size) {
+    if (allocator == NULL || size == 0) return (uint64_t)-1;
+
+    SizeClassID sc_id = map_size_to_sc_id(size);
+    if (sc_id == SC_COUNT) return (uint64_t)-1;
+
+    uint64_t slab_base_offset = (nvm_offset / NVM_SLAB_SIZE) * NVM_SLAB_SIZE;
+
+    NvmSlab* target_slab = slab_hashtable_lookup(allocator->slab_lookup_table, slab_base_offset);
+
+    if (target_slab == NULL) {
+        // Slab 不存在: 创建新的
+        if (space_manager_alloc_at_offset(allocator->space_manager, slab_base_offset) != 0) return (uint64_t)-1;
+
+        target_slab = nvm_slab_create(sc_id, slab_base_offset);
+        if (target_slab == NULL) {
+            space_manager_free_slab(allocator->space_manager, slab_base_offset); // 回滚
+            return (uint64_t)-1;
+        }
+
+        // 注册并链接新 Slab
+        slab_hashtable_insert(allocator->slab_lookup_table, slab_base_offset, target_slab);
+        target_slab->next_in_chain = allocator->slab_lists[sc_id];
+        allocator->slab_lists[sc_id] = target_slab;
+        
+    } else {
+        // Slab 已存在: 检查尺寸类别是否一致
+        if (target_slab->size_type_id != sc_id) return (uint64_t)-1;
+    }
+
+    // 在Slab内标记此块为已分配
+    uint32_t block_idx = (nvm_offset - slab_base_offset) / target_slab->block_size;
+    if (nvm_slab_set_bitmap_at_idx(target_slab, block_idx) != 0) return (uint64_t)-1;
+
+    return nvm_offset;
+}
+

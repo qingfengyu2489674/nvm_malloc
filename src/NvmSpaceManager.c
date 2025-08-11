@@ -195,3 +195,52 @@ static void insert_node_into_list(FreeSpaceManager* manager, FreeSegmentNode* ne
         manager->tail = new_node; // 插入到链表尾部
     }
 }
+
+
+int space_manager_alloc_at_offset(FreeSpaceManager* manager, uint64_t offset) {
+    if (manager == NULL) return -1;
+    
+    const uint64_t size_to_alloc = NVM_SLAB_SIZE;
+    uint64_t end_offset = offset + size_to_alloc;
+
+    // 遍历查找包含该区域的空闲节点
+    FreeSegmentNode* current = manager->head;
+    while (current != NULL) {
+        if (current->nvm_offset <= offset && (current->nvm_offset + current->size) >= end_offset) {
+            
+            bool is_head_match = (current->nvm_offset == offset);
+            bool is_tail_match = ((current->nvm_offset + current->size) == end_offset);
+
+            if (is_head_match && is_tail_match) {
+                // Case 1: 完美匹配，移除节点
+                remove_node_from_list(manager, current);
+                free(current);
+
+            } else if (is_head_match) {
+                // Case 2: 裁切头部
+                current->nvm_offset += size_to_alloc;
+                current->size -= size_to_alloc;
+
+            } else if (is_tail_match) {
+                // Case 3: 裁切尾部
+                current->size -= size_to_alloc;
+
+            } else {
+                // Case 4: 裁切中间，分裂节点
+                uint64_t original_end = current->nvm_offset + current->size;
+                current->size = offset - current->nvm_offset; // 修改原节点
+                
+                FreeSegmentNode* new_tail_node = create_segment_node(end_offset, original_end - end_offset);
+                if (new_tail_node == NULL) return -1;
+                insert_node_into_list(manager, new_tail_node, current, current->next); // 插入新节点
+            }
+            
+            return 0; // 成功
+        }
+        
+        current = current->next;
+    }
+    
+    // 未找到合适的空闲块
+    return -1;
+}
