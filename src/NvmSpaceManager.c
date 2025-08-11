@@ -40,6 +40,7 @@ static void insert_node_into_list(FreeSpaceManager* manager, FreeSegmentNode* ne
 FreeSpaceManager* space_manager_create(uint64_t total_nvm_size, uint64_t nvm_start_offset) {
     FreeSpaceManager* manager = (FreeSpaceManager*)malloc(sizeof(FreeSpaceManager));
     if (manager == NULL) {
+        fprintf(stderr, "ERROR: [space_manager_create] Failed to allocate memory for FreeSpaceManager struct.\n");
         return NULL;
     }
     manager->head = NULL;
@@ -47,6 +48,8 @@ FreeSpaceManager* space_manager_create(uint64_t total_nvm_size, uint64_t nvm_sta
 
     // 验证NVM总大小是否有效
     if (total_nvm_size < NVM_SLAB_SIZE) {
+        fprintf(stderr, "ERROR: [space_manager_create] total_nvm_size (%llu) is smaller than a single slab size (%llu).\n",
+                (unsigned long long)total_nvm_size, (unsigned long long)NVM_SLAB_SIZE);
         free(manager);
         return NULL;
     }
@@ -54,6 +57,7 @@ FreeSpaceManager* space_manager_create(uint64_t total_nvm_size, uint64_t nvm_sta
     // 创建代表整个空间的初始空闲节点
     FreeSegmentNode* initial_node = create_segment_node(nvm_start_offset, total_nvm_size);
     if (initial_node == NULL) {
+        fprintf(stderr, "ERROR: [space_manager_create] Failed to create initial free segment node.\n");
         free(manager);
         return NULL;
     }
@@ -111,7 +115,7 @@ uint64_t space_manager_alloc_slab(FreeSpaceManager* manager) {
         current = current->next;
     }
 
-    // 未找到足够大的空闲块，返回失败
+    fprintf(stderr, "ERROR: [space_manager_alloc_slab] Out of memory. No free segment large enough to fit a slab.\n");
     return (uint64_t)-1;
 }
 
@@ -152,7 +156,10 @@ void space_manager_free_slab(FreeSpaceManager* manager, uint64_t offset_to_free)
     } else {
         // 无法合并：创建并插入一个新的独立节点
         FreeSegmentNode* new_node = create_segment_node(offset_to_free, NVM_SLAB_SIZE);
-        if (new_node == NULL) { return; } // 内存不足，记录日志
+        if (new_node == NULL) {
+            fprintf(stderr, "ERROR: [space_manager_free_slab] Failed to create new segment node during free operation (out of host memory).\n");
+            return; // 内存不足，无法归还空间，这是一个严重的问题
+        }
         insert_node_into_list(manager, new_node, prev_node, next_node);
     }
 }
@@ -170,6 +177,8 @@ static FreeSegmentNode* create_segment_node(uint64_t offset, uint64_t size) {
         node->size = size;
         node->prev = NULL;
         node->next = NULL;
+    } else {
+        fprintf(stderr, "ERROR: [create_segment_node] malloc failed for FreeSegmentNode.\n");
     }
     return node;
 }
@@ -249,7 +258,11 @@ int space_manager_alloc_at_offset(FreeSpaceManager* manager, uint64_t offset) {
                 current->size = offset - current->nvm_offset; // 修改原节点
                 
                 FreeSegmentNode* new_tail_node = create_segment_node(end_offset, original_end - end_offset);
-                if (new_tail_node == NULL) return -1;
+                if (new_tail_node == NULL) {
+                    // 无法回滚，这是一个严重错误，但至少返回失败
+                    fprintf(stderr, "ERROR: [space_manager_alloc_at_offset] Failed to create new tail node during split (out of host memory).\n");
+                    return -1;
+                }
                 insert_node_into_list(manager, new_tail_node, current, current->next); // 插入新节点
             }
             
@@ -259,6 +272,7 @@ int space_manager_alloc_at_offset(FreeSpaceManager* manager, uint64_t offset) {
         current = current->next;
     }
     
-    // 未找到合适的空闲块
+    fprintf(stderr, "ERROR: [space_manager_alloc_at_offset] Requested space at offset %llu is not free or available.\n",
+            (unsigned long long)offset);
     return -1;
 }

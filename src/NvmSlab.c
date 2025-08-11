@@ -211,26 +211,23 @@ static uint32_t drain_cache(NvmSlab* self) {
 
 
 int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
-    // 1. 参数有效性检查
+
     if (self == NULL) {
+        fprintf(stderr, "ERROR: [nvm_slab_set_bitmap_at_idx] Invalid argument: self pointer is NULL.\n");
         return -1;
     }
     if (block_idx >= self->total_block_count) {
-        // 块索引超出了此Slab的管理范围
+        fprintf(stderr, "ERROR: [nvm_slab_set_bitmap_at_idx] Block index %u is out of bounds for this slab (total blocks: %u).\n", 
+                block_idx, self->total_block_count);
         return -1;
     }
 
-    // 2. 检查位图，实现幂等性
-    //    只有当块当前是空闲时（位为0），才执行标记操作
     if (!IS_BIT_SET(self->bitmap, block_idx)) {
-        
-        // 3. 标记位图
-        SET_BIT(self->bitmap, block_idx);
-        
-        // 4. 更新已分配块的计数
+        SET_BIT(self->bitmap, block_idx);    
         self->allocated_block_count++;
+    } else {
+        fprintf(stderr, "WARN: [nvm_slab_set_bitmap_at_idx] Attempted to set block %u, but it was already set. Possible duplicate restore entry.\n", block_idx);
     }
     
-    // 如果块已经被标记过了（IS_BIT_SET返回true），则什么都不做，直接返回成功。
     return 0;
 }

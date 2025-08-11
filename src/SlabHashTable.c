@@ -33,16 +33,19 @@ static SlabHashNode* create_hash_node(uint64_t nvm_offset, NvmSlab* slab_ptr);
 // 创建并初始化哈希表
 SlabHashTable* slab_hashtable_create(uint32_t initial_capacity) {
     if (initial_capacity == 0) {
+        fprintf(stderr, "ERROR [HashTable]: Cannot create hash table with zero capacity.\n");
         return NULL;
     }
 
     SlabHashTable* table = (SlabHashTable*)malloc(sizeof(SlabHashTable));
     if (table == NULL) {
+        fprintf(stderr, "ERROR [HashTable]: Failed to allocate memory for SlabHashTable struct.\n");
         return NULL;
     }
 
     table->buckets = (SlabHashNode**)calloc(initial_capacity, sizeof(SlabHashNode*));
     if (table->buckets == NULL) {
+        fprintf(stderr, "ERROR [HashTable]: Failed to allocate memory for hash buckets.\n");
         free(table);
         return NULL;
     }
@@ -73,6 +76,7 @@ void slab_hashtable_destroy(SlabHashTable* table) {
 // 向哈希表中插入一个 "偏移量 -> Slab指针" 映射
 int slab_hashtable_insert(SlabHashTable* table, uint64_t nvm_offset, NvmSlab* slab_ptr) {
     if (table == NULL || slab_ptr == NULL) {
+        fprintf(stderr, "ERROR [HashTable]: Insert failed due to NULL table or slab_ptr argument.\n");
         return -1;
     }
     
@@ -82,6 +86,7 @@ int slab_hashtable_insert(SlabHashTable* table, uint64_t nvm_offset, NvmSlab* sl
     SlabHashNode* current_node = table->buckets[bucket_index];
     while (current_node != NULL) {
         if (current_node->nvm_offset == nvm_offset) {
+            fprintf(stderr, "ERROR [HashTable]: Insert failed. Key %llu already exists in the hash table.\n", (unsigned long long)nvm_offset);
             return -1; // 键已存在
         }
         current_node = current_node->next;
@@ -90,6 +95,7 @@ int slab_hashtable_insert(SlabHashTable* table, uint64_t nvm_offset, NvmSlab* sl
     // 创建新节点并使用头插法插入
     SlabHashNode* new_node = create_hash_node(nvm_offset, slab_ptr);
     if (new_node == NULL) {
+        fprintf(stderr, "ERROR [HashTable]: Insert failed. Could not create hash node (host memory exhausted).\n");
         return -1; // 内存不足
     }
     new_node->next = table->buckets[bucket_index];
@@ -150,6 +156,7 @@ NvmSlab* slab_hashtable_remove(SlabHashTable* table, uint64_t nvm_offset) {
         current_node = current_node->next;
     }
 
+    fprintf(stderr, "WARN [HashTable]: Attempted to remove non-existent key %llu.\n", (unsigned long long)nvm_offset);
     return NULL; // 未找到
 }
 
@@ -172,6 +179,8 @@ static SlabHashNode* create_hash_node(uint64_t nvm_offset, NvmSlab* slab_ptr) {
         node->nvm_offset = nvm_offset;
         node->slab_ptr = slab_ptr;
         node->next = NULL;
+    } else {
+        fprintf(stderr, "ERROR [HashTable]: malloc failed for SlabHashNode.\n");
     }
     return node;
 }

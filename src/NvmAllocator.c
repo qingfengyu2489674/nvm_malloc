@@ -35,13 +35,18 @@ static int nvm_allocator_restore_allocation_impl(NvmAllocator* allocator, void* 
 
 int nvm_allocator_create(void* nvm_base_addr, uint64_t nvm_size_bytes) {
     if (global_nvm_allocator != NULL) {
-        // 可以选择在这里记录一个警告日志
+        fprintf(stderr, "WARN: [nvm_allocator_create] Allocator already initialized. Ignoring new create request.\n");
         return -1;
     }
     
     global_nvm_allocator = nvm_allocator_create_impl(nvm_base_addr, nvm_size_bytes);
 
-    return (global_nvm_allocator != NULL) ? 0 : -1;
+    if (global_nvm_allocator == NULL) {
+        fprintf(stderr, "ERROR: [nvm_allocator_create] Failed to create NVM allocator instance.\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 void nvm_allocator_destroy(void) {
@@ -55,6 +60,7 @@ void* nvm_malloc(size_t size) {
     assert(global_nvm_allocator != NULL && "NVM Allocator has not been initialized. Call nvm_allocator_init() first.");
     
     if (global_nvm_allocator == NULL) {
+        fprintf(stderr, "ERROR: [nvm_malloc] Allocator not initialized.\n");
         return NULL;
     }
 
@@ -125,11 +131,14 @@ static void remove_slab_from_list(NvmSlab** list_head, NvmSlab* slab_to_remove) 
 
 static NvmAllocator* nvm_allocator_create_impl(void* nvm_base_addr, uint64_t nvm_size_bytes) {
 
-    if(nvm_base_addr == NULL)
+    if(nvm_base_addr == NULL) {
+        fprintf(stderr, "ERROR: [nvm_allocator_create_impl] nvm_base_addr cannot be NULL.\n");
         return NULL;
+    }
 
     NvmAllocator* allocator = (NvmAllocator*)malloc(sizeof(NvmAllocator));
     if (allocator == NULL) {
+        fprintf(stderr, "ERROR: [nvm_allocator_create_impl] Failed to allocate memory for NvmAllocator struct.\n");
         return NULL;
     }
 
@@ -141,6 +150,7 @@ static NvmAllocator* nvm_allocator_create_impl(void* nvm_base_addr, uint64_t nvm
 
     // 任一组件创建失败，则清理并返回NULL
     if (allocator->space_manager == NULL || allocator->slab_lookup_table == NULL) {
+        fprintf(stderr, "ERROR: [nvm_allocator_create_impl] Failed to create space_manager or slab_lookup_table.\n");
         space_manager_destroy(allocator->space_manager);
         slab_hashtable_destroy(allocator->slab_lookup_table);
         free(allocator);
@@ -186,7 +196,8 @@ static void* nvm_malloc_impl(NvmAllocator* allocator, size_t size) {
 
     // 映射请求大小到尺寸类别
     SizeClassID sc_id = map_size_to_sc_id(size);
-    if (sc_id == SC_COUNT) {
+    if (sc_id == SC_COUNT) {    
+        fprintf(stderr, "ERROR: [nvm_malloc_impl] Requested size %zu is too large for slab allocation.\n", size);
         // TODO: 为大对象增加直接分配逻辑
         return NULL;
     }
@@ -201,12 +212,14 @@ static void* nvm_malloc_impl(NvmAllocator* allocator, size_t size) {
     if (target_slab == NULL) {
         uint64_t new_slab_offset = space_manager_alloc_slab(allocator->space_manager);
         if (new_slab_offset == (uint64_t)-1) {
+            fprintf(stderr, "ERROR: [nvm_malloc_impl] NVM space exhausted. Cannot allocate a new slab.\n");
             return NULL; // NVM空间耗尽
         }
 
         target_slab = nvm_slab_create(sc_id, new_slab_offset);
         if (target_slab == NULL) {
             space_manager_free_slab(allocator->space_manager, new_slab_offset); // DRAM不足，归还NVM空间
+            fprintf(stderr, "ERROR: [nvm_malloc_impl] Failed to create slab metadata (DRAM exhausted?).\n");
             return NULL;
         }
 
@@ -223,6 +236,7 @@ static void* nvm_malloc_impl(NvmAllocator* allocator, size_t size) {
         return (void*)((char*)allocator->nvm_base_addr + final_offset);
     }
 
+    fprintf(stderr, "ERROR: [nvm_malloc_impl] nvm_slab_alloc failed unexpectedly after finding/creating a non-full slab.\n");
     return NULL; // 理论上不应发生
 }
  
@@ -265,9 +279,12 @@ static int nvm_allocator_restore_allocation_impl(NvmAllocator* allocator, void* 
     if (allocator == NULL || nvm_ptr == NULL || size == 0) return -1;
 
     SizeClassID sc_id = map_size_to_sc_id(size);
-    if (sc_id == SC_COUNT) return -1;
+    if (sc_id == SC_COUNT) {
+        fprintf(stderr, "ERROR: [nvm_allocator_restore_allocation_impl] Restore size %zu is too large for slab allocation.\n", size);
+        return -1;
+    }
 
-     uint64_t nvm_offset = (uint64_t)((char*)nvm_ptr - (char*)allocator->nvm_base_addr);
+    uint64_t nvm_offset = (uint64_t)((char*)nvm_ptr - (char*)allocator->nvm_base_addr);
 
     uint64_t slab_base_offset = (nvm_offset / NVM_SLAB_SIZE) * NVM_SLAB_SIZE;
 
@@ -275,11 +292,15 @@ static int nvm_allocator_restore_allocation_impl(NvmAllocator* allocator, void* 
 
     if (target_slab == NULL) {
         // Slab 不存在: 创建新的
-        if (space_manager_alloc_at_offset(allocator->space_manager, slab_base_offset) != 0) return (uint64_t)-1;
+        if (space_manager_alloc_at_offset(allocator->space_manager, slab_base_offset) != 0) {
+            fprintf(stderr, "ERROR: [nvm_allocator_restore_allocation_impl] Failed to reserve NVM space at offset %llu.\n", (unsigned long long)slab_base_offset);
+            return -1;
+        }
 
         target_slab = nvm_slab_create(sc_id, slab_base_offset);
         if (target_slab == NULL) {
             space_manager_free_slab(allocator->space_manager, slab_base_offset); // 回滚
+            fprintf(stderr, "ERROR: [nvm_allocator_restore_allocation_impl] Failed to create metadata for new slab (DRAM exhausted?).\n");
             return -1;
         }
 
@@ -290,12 +311,18 @@ static int nvm_allocator_restore_allocation_impl(NvmAllocator* allocator, void* 
         
     } else {
         // Slab 已存在: 检查尺寸类别是否一致
-        if (target_slab->size_type_id != sc_id) return -1;
+        if (target_slab->size_type_id != sc_id) {
+            fprintf(stderr, "ERROR: [nvm_allocator_restore_allocation_impl] Size class mismatch for existing slab at offset %llu. Expected SC_ID for size %zu, but found existing SC_ID %d.\n", (unsigned long long)slab_base_offset, size, target_slab->size_type_id);
+            return -1;
+        }
     }
 
     // 在Slab内标记此块为已分配
     uint32_t block_idx = (nvm_offset - slab_base_offset) / target_slab->block_size;
-    if (nvm_slab_set_bitmap_at_idx(target_slab, block_idx) != 0) return -1;
+    if (nvm_slab_set_bitmap_at_idx(target_slab, block_idx) != 0) {
+        fprintf(stderr, "ERROR: [nvm_allocator_restore_allocation_impl] Failed to mark block %u as allocated in slab at offset %llu. Block might be already allocated.\n", block_idx, (unsigned long long)slab_base_offset);
+        return -1;
+    }
 
     return 0;
 }
