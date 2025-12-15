@@ -9,6 +9,8 @@ typedef struct NvmSlab {
     
     struct NvmSlab* next_in_chain;    // 指向同尺寸链表中的下一个Slab
 
+    nvm_spinlock_t lock;              // 保护以下所有字段 (block_size 等只读字段除外)
+
     uint64_t nvm_base_offset;         // Slab在NVM上的起始偏移量 (ID)
     uint8_t  size_type_id;            // 尺寸类别ID
     uint8_t  _padding[3];             // 内存对齐

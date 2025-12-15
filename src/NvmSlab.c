@@ -54,11 +54,23 @@ NvmSlab* nvm_slab_create(SizeClassID sc_id, uint64_t nvm_base_offset) {
     self->block_size = block_size;
     self->total_block_count = total_block_count;
 
+    // --- 初始化自旋锁 ---
+    if (NVM_SPINLOCK_INIT(&self->lock) != 0) {
+        fprintf(stderr, "Error: Failed to initialize spinlock for NvmSlab.\n");
+        free(self);
+        return NULL;
+    }
+
     return self;
 }
 
 // 销毁Slab元数据
 void nvm_slab_destroy(NvmSlab* self) {
+    if (self == NULL) return;
+    
+    // --- 销毁自旋锁 ---
+    NVM_SPINLOCK_DESTROY(&self->lock);
+    
     free(self);
 }
 
@@ -68,6 +80,9 @@ int nvm_slab_alloc(NvmSlab* self, uint32_t* out_block_idx) {
         return -1;
     }
 
+    // --- 加锁 ---
+    NVM_SPINLOCK_ACQUIRE(&self->lock);
+
     // 本地缓存为空，尝试从位图填充
     if (self->cache_count == 0) {
         refill_cache(self);
@@ -75,6 +90,8 @@ int nvm_slab_alloc(NvmSlab* self, uint32_t* out_block_idx) {
 
     // 若仍然为空，则Slab已满
     if (self->cache_count == 0) {
+        // --- 解锁并返回失败 ---
+        NVM_SPINLOCK_RELEASE(&self->lock);
         return -1;
     }
 
@@ -85,8 +102,12 @@ int nvm_slab_alloc(NvmSlab* self, uint32_t* out_block_idx) {
     self->allocated_block_count++;
 
     *out_block_idx = block_idx;
+
+    // --- 解锁 ---
+    NVM_SPINLOCK_RELEASE(&self->lock);
     return 0;
 }
+
 
 // 将一个块释放回Slab
 void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
@@ -96,23 +117,8 @@ void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
         return;
     }
 
-    // // 检查双重释放
-    // // 1. 首先检查权威记录（位图）
-    // if (!IS_BIT_SET(self->bitmap, block_idx)) {
-    //     fprintf(stderr, "Warning: Double free detected for block index %u.\n", block_idx);
-    //     return;
-    // }
-
-    // // 2. 然后检查缓存
-    // // 遍历当前缓存中的所有有效索引
-    // for (uint32_t i = 0; i < self->cache_count; ++i) {
-    //     uint32_t cache_index = (self->cache_head + i) % SLAB_CACHE_SIZE;
-    //     if (self->free_block_buffer[cache_index] == block_idx) {
-    //         // 如果在缓存中找到了这个索引，这也是双重释放
-    //         fprintf(stderr, "Warning: Double free on a block already in the free cache (index %u).\n", block_idx);
-    //         return;
-    //     }
-    // }
+    // --- 加锁 ---
+    NVM_SPINLOCK_ACQUIRE(&self->lock);
 
     if (self->allocated_block_count > 0) {
         self->allocated_block_count--;
@@ -129,18 +135,49 @@ void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
     self->free_block_buffer[self->cache_tail] = block_idx;
     self->cache_tail = (self->cache_tail + 1) % SLAB_CACHE_SIZE;
     self->cache_count++;
+
+    // --- 解锁 ---
+    NVM_SPINLOCK_RELEASE(&self->lock);
 }
 
+
 // 检查Slab是否已满
+// 注意：这是一个只读查询，在弱一致性要求下可以不加锁，
 bool nvm_slab_is_full(const NvmSlab* self) {
     if (self == NULL) return false;
     return self->allocated_block_count == self->total_block_count;
 }
 
 // 检查Slab是否完全为空
+// 同上，作为状态查询，不加锁以提高性能。
 bool nvm_slab_is_empty(const NvmSlab* self) {
     if (self == NULL) return true;
     return self->allocated_block_count == 0;
+}
+
+int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
+    if (self == NULL) {
+        return -1;
+    }
+    if (block_idx >= self->total_block_count) {
+        return -1;
+    }
+
+    // --- 加锁 (恢复过程通常是单线程的，但保持一致性更好) ---
+    NVM_SPINLOCK_ACQUIRE(&self->lock);
+
+    int result = 0;
+    if (!IS_BIT_SET(self->bitmap, block_idx)) {
+        SET_BIT(self->bitmap, block_idx);    
+        self->allocated_block_count++;
+    } else {
+        // 已经是 1 了，可能是重复恢复
+        // fprintf(stderr, "WARN: ...\n");
+    }
+    
+    // --- 解锁 ---
+    NVM_SPINLOCK_RELEASE(&self->lock);
+    return result;
 }
 
 
@@ -166,6 +203,7 @@ static uint32_t get_block_size_from_sc_id(SizeClassID sc_id) {
 }
 
 // (内部) 扫描位图，用空闲块索引填充本地缓存
+// 【假设调用者已持有锁】
 static uint32_t refill_cache(NvmSlab* self) {
     if (self->allocated_block_count >= self->total_block_count) {
         return 0; // Slab已满，无需扫描
@@ -187,6 +225,7 @@ static uint32_t refill_cache(NvmSlab* self) {
 }
 
 // (内部) 当本地缓存满时，将部分空闲块索引回写到位图
+// 【假设调用者已持有锁】
 static uint32_t drain_cache(NvmSlab* self) {
     if (self->cache_count <= SLAB_CACHE_BATCH_SIZE) {
         return 0;
@@ -207,27 +246,4 @@ static uint32_t drain_cache(NvmSlab* self) {
     }
 
     return drained_count;
-}
-
-
-int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
-
-    if (self == NULL) {
-        fprintf(stderr, "ERROR: [nvm_slab_set_bitmap_at_idx] Invalid argument: self pointer is NULL.\n");
-        return -1;
-    }
-    if (block_idx >= self->total_block_count) {
-        fprintf(stderr, "ERROR: [nvm_slab_set_bitmap_at_idx] Block index %u is out of bounds for this slab (total blocks: %u).\n", 
-                block_idx, self->total_block_count);
-        return -1;
-    }
-
-    if (!IS_BIT_SET(self->bitmap, block_idx)) {
-        SET_BIT(self->bitmap, block_idx);    
-        self->allocated_block_count++;
-    } else {
-        fprintf(stderr, "WARN: [nvm_slab_set_bitmap_at_idx] Attempted to set block %u, but it was already set. Possible duplicate restore entry.\n", block_idx);
-    }
-    
-    return 0;
 }
