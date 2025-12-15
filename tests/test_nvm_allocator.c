@@ -61,12 +61,14 @@ void test_allocator_lifecycle(void) {
     TEST_ASSERT_NOT_NULL(global_nvm_allocator);
 
     // 白盒检查:
-    TEST_ASSERT_EQUAL_PTR(mock_nvm_base, global_nvm_allocator->nvm_base_addr);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->space_manager);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lookup_table);
-    TEST_ASSERT_EQUAL_UINT64(TOTAL_NVM_SIZE, global_nvm_allocator->space_manager->head->size);
+    // [Updated for Parallel Heap]: 访问 central_heap 和 cpu_heaps[0]
+    TEST_ASSERT_EQUAL_PTR(mock_nvm_base, global_nvm_allocator->central_heap.nvm_base_addr);
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->central_heap.space_manager);
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->central_heap.slab_lookup_table);
+    TEST_ASSERT_EQUAL_UINT64(TOTAL_NVM_SIZE, global_nvm_allocator->central_heap.space_manager->head->size);
+    
     for (int i = 0; i < SC_COUNT; ++i) {
-        TEST_ASSERT_NULL(global_nvm_allocator->slab_lists[i]);
+        TEST_ASSERT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[i]);
     }
 
     // --- 子测试 2: 无效参数创建 ---
@@ -88,14 +90,18 @@ void test_basic_malloc_and_free(void) {
     TEST_ASSERT_NOT_NULL(ptr);
     
     // 白盒检查:
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lists[SC_32B]);
-    TEST_ASSERT_EQUAL_UINT32(1, global_nvm_allocator->slab_lookup_table->count);
-    TEST_ASSERT_EQUAL_UINT64((NUM_SLABS - 1) * NVM_SLAB_SIZE, global_nvm_allocator->space_manager->head->size);
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[SC_32B]);
+    
+    // [Updated for Parallel Heap]: 访问 central_heap
+    TEST_ASSERT_EQUAL_UINT32(1, global_nvm_allocator->central_heap.slab_lookup_table->count);
+    TEST_ASSERT_EQUAL_UINT64((NUM_SLABS - 1) * NVM_SLAB_SIZE, global_nvm_allocator->central_heap.space_manager->head->size);
 
     // --- 子测试 2: 释放 ---
     nvm_free(ptr);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lists[SC_32B]);
-    TEST_ASSERT_TRUE(nvm_slab_is_empty(global_nvm_allocator->slab_lists[SC_32B]));
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[SC_32B]);
+    TEST_ASSERT_TRUE(nvm_slab_is_empty(global_nvm_allocator->cpu_heaps[0].slab_lists[SC_32B]));
 }
 
 /**
@@ -105,19 +111,23 @@ void test_slab_creation_and_reuse(void) {
     // 1. 分配一个 60 字节的对象
     void* ptr1 = nvm_malloc(60);
     TEST_ASSERT_NOT_NULL(ptr1);
-    NvmSlab* slab64_ptr = global_nvm_allocator->slab_lists[SC_64B];
+    
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    NvmSlab* slab64_ptr = global_nvm_allocator->cpu_heaps[0].slab_lists[SC_64B];
     TEST_ASSERT_NOT_NULL(slab64_ptr);
 
     // 2. 再次分配 60 字节，应复用同一个Slab
     void* ptr2 = nvm_malloc(60);
     TEST_ASSERT_NOT_NULL(ptr2);
-    TEST_ASSERT_EQUAL_PTR(slab64_ptr, global_nvm_allocator->slab_lists[SC_64B]);
+    TEST_ASSERT_EQUAL_PTR(slab64_ptr, global_nvm_allocator->cpu_heaps[0].slab_lists[SC_64B]);
 
     // 3. 分配一个不同尺寸的对象 (8字节)，应创建新的Slab
     void* ptr3 = nvm_malloc(8);
     TEST_ASSERT_NOT_NULL(ptr3);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lists[SC_8B]);
-    TEST_ASSERT_EQUAL_UINT32(2, global_nvm_allocator->slab_lookup_table->count);
+    
+    // [Updated for Parallel Heap]
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[SC_8B]);
+    TEST_ASSERT_EQUAL_UINT32(2, global_nvm_allocator->central_heap.slab_lookup_table->count);
 }
 
 /**
@@ -138,17 +148,22 @@ void test_empty_slab_recycling(void) {
     
     ptrs[blocks_per_slab] = nvm_malloc(alloc_size);
     TEST_ASSERT_NOT_NULL(ptrs[blocks_per_slab]);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lists[sc_id]->next_in_chain);
+    
+    // [Updated for Parallel Heap]
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[sc_id]->next_in_chain);
     
     for (uint32_t i = 0; i < blocks_per_slab; ++i) {
         nvm_free(ptrs[i]);
     }
 
-    TEST_ASSERT_NULL(global_nvm_allocator->slab_lists[sc_id]->next_in_chain);
-    TEST_ASSERT_EQUAL_UINT32(1, global_nvm_allocator->slab_lookup_table->count);
+    // [Updated for Parallel Heap]
+    TEST_ASSERT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[sc_id]->next_in_chain);
+    TEST_ASSERT_EQUAL_UINT32(1, global_nvm_allocator->central_heap.slab_lookup_table->count);
     
     nvm_free(ptrs[blocks_per_slab]);
-    TEST_ASSERT_TRUE(nvm_slab_is_empty(global_nvm_allocator->slab_lists[sc_id]));
+    
+    // [Updated for Parallel Heap]
+    TEST_ASSERT_TRUE(nvm_slab_is_empty(global_nvm_allocator->cpu_heaps[0].slab_lists[sc_id]));
     
     free(ptrs);
 }
@@ -168,7 +183,8 @@ void test_nvm_space_exhaustion(void) {
     for (int i = 0; i < NVM_SLAB_SIZE / 8; ++i) nvm_malloc(8);
     for (int i = 0; i < NVM_SLAB_SIZE / 16; ++i) nvm_malloc(16);
 
-    TEST_ASSERT_NULL(global_nvm_allocator->space_manager->head);
+    // [Updated for Parallel Heap]
+    TEST_ASSERT_NULL(global_nvm_allocator->central_heap.space_manager->head);
     TEST_ASSERT_NULL(nvm_malloc(32));
 }
 

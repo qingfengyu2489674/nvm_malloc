@@ -64,7 +64,8 @@ void test_restore_first_object_in_new_slab(void) {
     TEST_ASSERT_EQUAL_INT(0, result);
 
     // 白盒验证
-    NvmSlab* restored_slab = global_nvm_allocator->slab_lists[sc_id];
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    NvmSlab* restored_slab = global_nvm_allocator->cpu_heaps[0].slab_lists[sc_id];
     TEST_ASSERT_NOT_NULL(restored_slab);
     TEST_ASSERT_EQUAL_UINT64(slab_base_offset, restored_slab->nvm_base_offset);
     uint32_t block_idx = (obj_offset - slab_base_offset) / restored_slab->block_size;
@@ -86,7 +87,8 @@ void test_restore_second_object_in_existing_slab(void) {
     TEST_ASSERT_EQUAL_INT(0, result);
 
     // 白盒验证
-    NvmSlab* slab = global_nvm_allocator->slab_lists[SC_32B];
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    NvmSlab* slab = global_nvm_allocator->cpu_heaps[0].slab_lists[SC_32B];
     TEST_ASSERT_EQUAL_UINT32(2, slab->allocated_block_count);
     TEST_ASSERT_TRUE(IS_BIT_SET(slab->bitmap, 0));
     TEST_ASSERT_TRUE(IS_BIT_SET(slab->bitmap, 4));
@@ -98,7 +100,8 @@ void test_restore_second_object_in_existing_slab(void) {
 void test_restore_object_at_head_of_space(void) {
     TEST_ASSERT_EQUAL_INT(0, nvm_allocator_restore_allocation(mock_nvm_base, 16));
     
-    FreeSegmentNode* head = global_nvm_allocator->space_manager->head;
+    // [Updated for Parallel Heap]: 访问 central_heap
+    FreeSegmentNode* head = global_nvm_allocator->central_heap.space_manager->head;
     TEST_ASSERT_EQUAL_UINT64(NVM_SLAB_SIZE, head->nvm_offset);
 }
 
@@ -111,7 +114,8 @@ void test_restore_object_at_tail_of_space(void) {
 
     TEST_ASSERT_EQUAL_INT(0, nvm_allocator_restore_allocation(obj_ptr, 16));
 
-    FreeSegmentNode* head = global_nvm_allocator->space_manager->head;
+    // [Updated for Parallel Heap]: 访问 central_heap
+    FreeSegmentNode* head = global_nvm_allocator->central_heap.space_manager->head;
     TEST_ASSERT_EQUAL_UINT64(slab_base_offset, head->size);
     TEST_ASSERT_NULL(head->next);
 }
@@ -165,7 +169,8 @@ static void restore_single_slab_for_stress_test(const StressTestSlabInfo* info) 
 }
 
 static void verify_restored_slab(const StressTestSlabInfo* info) {
-    NvmSlab* slab = slab_hashtable_lookup(global_nvm_allocator->slab_lookup_table, info->slab_base_offset);
+    // [Updated for Parallel Heap]: 访问 central_heap
+    NvmSlab* slab = slab_hashtable_lookup(global_nvm_allocator->central_heap.slab_lookup_table, info->slab_base_offset);
     TEST_ASSERT_NOT_NULL(slab);
     TEST_ASSERT_EQUAL_UINT64(info->slab_base_offset, slab->nvm_base_offset);
     TEST_ASSERT_EQUAL_UINT8(info->sc_id, slab->size_type_id);
@@ -195,14 +200,17 @@ void test_restore_multiple_slabs_and_stress(void) {
         restore_single_slab_for_stress_test(&test_scenario[i]);
     }
 
-    TEST_ASSERT_EQUAL_UINT32(num_scenarios, global_nvm_allocator->slab_lookup_table->count);
-    TEST_ASSERT_NOT_NULL(global_nvm_allocator->slab_lists[SC_16B]);
+    // [Updated for Parallel Heap]: 访问 central_heap
+    TEST_ASSERT_EQUAL_UINT32(num_scenarios, global_nvm_allocator->central_heap.slab_lookup_table->count);
+    // [Updated for Parallel Heap]: 访问 cpu_heaps[0]
+    TEST_ASSERT_NOT_NULL(global_nvm_allocator->cpu_heaps[0].slab_lists[SC_16B]);
 
     for (int i = 0; i < num_scenarios; ++i) {
         verify_restored_slab(&test_scenario[i]);
     }
 
-    FreeSegmentNode* current = global_nvm_allocator->space_manager->head;
+    // [Updated for Parallel Heap]: 访问 central_heap
+    FreeSegmentNode* current = global_nvm_allocator->central_heap.space_manager->head;
 
     TEST_ASSERT_NOT_NULL(current);
     TEST_ASSERT_EQUAL_UINT64(0 * NVM_SLAB_SIZE, current->nvm_offset);
