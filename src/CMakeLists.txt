@@ -34,3 +34,5 @@ else()
     
     message(STATUS "Library '${CMAKE_PROJECT_NAME}' created with sources: ${SRCS}")
 endif()
+
+

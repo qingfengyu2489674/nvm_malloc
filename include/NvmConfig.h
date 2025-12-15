@@ -5,6 +5,7 @@
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <bits/pthreadtypes.h>
 
 // ============================================================================
 // 1. CPU 配置与 ID 获取
@@ -53,5 +54,7 @@ typedef pthread_mutex_t nvm_mutex_t;
 #define NVM_MUTEX_DESTROY(l)    pthread_mutex_destroy(l)
 #define NVM_MUTEX_ACQUIRE(l)    pthread_mutex_lock(l)
 #define NVM_MUTEX_RELEASE(l)    pthread_mutex_unlock(l)
+
+#define CACHE_LINE_SIZE 64 // 或 128，取决于你的 CPU 架构
 
 #endif // NVM_CONFIG_H
