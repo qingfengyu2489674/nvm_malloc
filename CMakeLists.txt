@@ -5,6 +5,12 @@
 cmake_minimum_required(VERSION 3.15)
 project(my_project VERSION 1.0.0 LANGUAGES C)
 
+# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer -g")
+# set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=address")
+
+# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=thread -g -O2")
+# set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=thread")
+
 # 开启 GNU 扩展，确定 sched_getcpu 可用
 add_definitions(-D_GNU_SOURCE)
 

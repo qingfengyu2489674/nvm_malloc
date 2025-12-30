@@ -80,7 +80,7 @@ int nvm_slab_alloc(NvmSlab* self, uint32_t* out_block_idx) {
     *out_block_idx = self->free_block_buffer[self->cache_head];
     self->cache_head = (self->cache_head + 1) % SLAB_CACHE_SIZE;
     self->cache_count--;
-    self->allocated_block_count++;
+    __atomic_fetch_add(&self->allocated_block_count, 1, __ATOMIC_RELAXED);
 
     NVM_SPINLOCK_RELEASE(&self->lock);
     return 0;
@@ -96,7 +96,7 @@ void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
     NVM_SPINLOCK_ACQUIRE(&self->lock);
 
     if (self->allocated_block_count > 0) {
-        self->allocated_block_count--;
+        __atomic_fetch_sub(&self->allocated_block_count, 1, __ATOMIC_RELAXED);
     }
 
     // 缓存满时回写位图
@@ -114,13 +114,16 @@ void nvm_slab_free(NvmSlab* self, uint32_t block_idx) {
 
 bool nvm_slab_is_full(const NvmSlab* self) {
     if (!self) return false;
-    // 乐观读取，无锁
-    return self->allocated_block_count >= self->total_block_count;
+    
+    uint32_t cnt = __atomic_load_n(&self->allocated_block_count, __ATOMIC_RELAXED);
+    return cnt >= self->total_block_count;
 }
 
 bool nvm_slab_is_empty(const NvmSlab* self) {
     if (!self) return true;
-    return self->allocated_block_count == 0;
+
+    uint32_t cnt = __atomic_load_n(&self->allocated_block_count, __ATOMIC_RELAXED);
+    return cnt == 0;
 }
 
 int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
@@ -130,7 +133,7 @@ int nvm_slab_set_bitmap_at_idx(NvmSlab* self, uint32_t block_idx) {
     
     if (!IS_BIT_SET(self->bitmap, block_idx)) {
         SET_BIT(self->bitmap, block_idx);    
-        self->allocated_block_count++;
+        __atomic_fetch_add(&self->allocated_block_count, 1, __ATOMIC_RELAXED);
     }
     
     NVM_SPINLOCK_RELEASE(&self->lock);
