@@ -284,3 +284,33 @@ static int nvm_allocator_restore_allocation_impl(NvmAllocator* allocator, void* 
     uint32_t block_idx = (nvm_offset - slab_base) / slab->block_size;
     return nvm_slab_set_bitmap_at_idx(slab, block_idx);
 }
+
+
+// ============================================================================
+//                          调试与监控 API 实现
+// ============================================================================
+
+void nvm_allocator_debug_print(void) {
+    if (!global_nvm_allocator) {
+        printf("[NvmAllocator] Error: Allocator is not initialized.\n");
+        return;
+    }
+
+    NvmCentralHeap* central = &global_nvm_allocator->central_heap;
+
+    printf("================================================================\n");
+    printf("                  NVM Allocator Debug Dump                      \n");
+    printf("================================================================\n");
+    
+    printf("Global Info:\n");
+    printf("  NVM Base Address : %p\n", central->nvm_base_addr);
+    
+    // 修改处：传入基地址，并且 verbose 设为 true
+    if (central->slab_lookup_table) {
+        slab_hashtable_print_layout(central->slab_lookup_table, central->nvm_base_addr, true);
+    } else {
+        printf("[NvmAllocator] Warning: Hash table is NULL.\n");
+    }
+
+    printf("================================================================\n");
+}

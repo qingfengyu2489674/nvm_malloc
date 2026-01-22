@@ -22,6 +22,9 @@ typedef struct SlabHashTable {
     nvm_rwlock_t   lock;         // 读写锁
 } SlabHashTable;
 
+#define CHECK_BIT(bitmap, idx) ((bitmap)[(idx) / 8] & (1 << ((idx) % 8)))
+
+
 // ============================================================================
 //                          内部函数前向声明
 // ============================================================================
@@ -168,6 +171,83 @@ NvmSlab* slab_hashtable_remove(SlabHashTable* table, uint64_t nvm_offset) {
     LOG_ERR("Key %llu not found for removal.", (unsigned long long)nvm_offset);
     NVM_RWLOCK_UNLOCK(&table->lock);
     return NULL;
+}
+
+
+// ============================================================================
+//                          调试工具 API 实现
+// ============================================================================
+
+void slab_hashtable_print_layout(SlabHashTable* table, void* base_addr, bool verbose) {
+    if (!table) {
+        printf("[SlabHashTable] Table is NULL\n");
+        return;
+    }
+
+    // 加读锁
+    NVM_RWLOCK_READ_LOCK(&table->lock);
+
+    printf("\n=== NVM Allocated Memory Dump ===\n");
+    printf("Total Active Slabs: %u\n", table->count);
+
+    uint32_t slab_counter = 0;
+    uint64_t total_objects_allocated = 0;
+
+    for (uint32_t i = 0; i < table->capacity; i++) {
+        SlabHashNode* curr = table->buckets[i];
+        
+        while (curr) {
+            NvmSlab* slab = curr->slab_ptr;
+            // 防御性检查
+            if (!slab) { curr = curr->next; continue; }
+
+            uint32_t b_size = slab->block_size;
+            uint32_t alloc_cnt = slab->allocated_block_count;
+            uint32_t total_cnt = slab->total_block_count;
+
+            // 1. 打印 Slab 头部信息
+            printf("----------------------------------------------------------------\n");
+            printf("[Slab #%u] Offset: 0x%-8llx | BlockSize: %-5u | Usage: %u/%u\n", 
+                   slab_counter++, 
+                   (unsigned long long)curr->nvm_offset, 
+                   b_size, 
+                   alloc_cnt, 
+                   total_cnt);
+
+            // 2. 如果开启详细模式且该 Slab 有分配对象，则遍历位图打印地址
+            if (verbose && alloc_cnt > 0) {
+                printf("    Allocated Blocks (Index -> Address):\n");
+                
+                // 遍历位图
+                for (uint32_t k = 0; k < total_cnt; k++) {
+                    if (CHECK_BIT(slab->bitmap, k)) {
+                        // --- 核心地址计算逻辑 ---
+                        // 1. 块在 Slab 内的偏移 = 索引 * 块大小
+                        uint64_t intra_slab_offset = k * b_size;
+                        // 2. 块在 NVM 中的总偏移 = Slab偏移 + Slab内偏移
+                        uint64_t total_offset = curr->nvm_offset + intra_slab_offset;
+                        // 3. 块的绝对虚拟地址 = NVM基地址 + 总偏移
+                        void* block_addr = (char*)base_addr + total_offset;
+
+                        printf("      [%3u] %p (Len: %u)\n", k, block_addr, b_size);
+                        
+                        total_objects_allocated++;
+                    }
+                }
+            } else if (alloc_cnt == 0) {
+                printf("    (Slab is Empty)\n");
+            } else if (!verbose) {
+                printf("    (Details hidden, set verbose=true to see addresses)\n");
+            }
+            
+            curr = curr->next;
+        }
+    }
+    printf("----------------------------------------------------------------\n");
+    printf("=== End Dump: %u Slabs, %llu Total Objects ===\n\n", 
+           slab_counter, (unsigned long long)total_objects_allocated);
+
+    NVM_RWLOCK_UNLOCK(&table->lock);
 }
 
 // ============================================================================

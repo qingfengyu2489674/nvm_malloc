@@ -60,6 +60,20 @@ NvmSlab* slab_hashtable_lookup(SlabHashTable* table, uint64_t nvm_offset);
  */
 NvmSlab* slab_hashtable_remove(SlabHashTable* table, uint64_t nvm_offset);
 
+
+// ============================================================================
+//                          调试工具 API
+// ============================================================================
+
+/**
+ * @brief [调试] 打印哈希表及详细的内存块分配情况
+ * 
+ * @param table 哈希表句柄
+ * @param base_addr NVM 全局基地址 (用于计算绝对指针)
+ * @param verbose 是否打印每个已分配块的具体地址列表
+ */
+void slab_hashtable_print_layout(SlabHashTable* table, void* base_addr, bool verbose);
+
 #ifdef __cplusplus
 }
 #endif

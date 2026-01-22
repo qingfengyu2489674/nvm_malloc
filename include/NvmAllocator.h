@@ -73,6 +73,17 @@ void nvm_free(void* nvm_ptr);
  */
 int nvm_allocator_restore_allocation(void* nvm_ptr, size_t size);
 
+/**
+ * @brief [调试] 打印分配器内部布局信息
+ * 
+ * 输出内容包括：
+ * 1. NVM 物理内存的基地址 (Base Address)
+ * 2. 所有活跃 Slab (2MB 页) 的偏移量分布情况 (调用哈希表打印)
+ * 
+ * @note 此函数主要用于开发调试，检查内存映射是否符合预期。
+ */
+void nvm_allocator_debug_print(void);
+
 #ifdef __cplusplus
 }
 #endif

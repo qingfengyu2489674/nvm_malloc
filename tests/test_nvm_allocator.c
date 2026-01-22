@@ -164,6 +164,120 @@ void test_mixed_load_and_fragmentation(void) {
     free(ptrs);
 }
 
+
+
+
+void test_debug_print_api(void) {
+    // Case 1: 正常初始化状态下的打印
+    printf("\n>>> [TEST START] Visual Check for nvm_allocator_debug_print <<<\n");
+    
+    // 为了让打印内容有意义，我们先分配几个不同大小的内存，触发 Slab 的创建和哈希表插入
+    void* p1 = nvm_malloc(32);   // 触发 SC_32B Slab
+    void* p2 = nvm_malloc(4096); // 触发 SC_4K Slab
+    void* p3 = nvm_malloc(32);   // 复用 SC_32B Slab
+
+    // 调用被测接口
+    // 预期输出：
+    // 1. NVM Base Address (非空)
+    // 2. Hash Table 容量和计数
+    // 3. 至少两个 Bucket 的条目 (对应 32B 和 4KB 的 Slab)
+    nvm_allocator_debug_print();
+
+    // 清理分配
+    nvm_free(p1);
+    nvm_free(p2);
+    nvm_free(p3);
+
+    printf(">>> [TEST END] Visual Check for nvm_allocator_debug_print <<<\n");
+
+    // Case 2: 未初始化状态下的打印
+    // 先手动销毁分配器
+    nvm_allocator_destroy();
+
+    printf("\n>>> [TEST START] Visual Check for Uninitialized State <<<\n");
+    // 调用接口
+    // 预期输出：提示 "Allocator is not initialized" 或类似错误，且程序不应崩溃
+    nvm_allocator_debug_print();
+    printf(">>> [TEST END] Visual Check for Uninitialized State <<<\n");
+
+    // 恢复现场：重新创建分配器，以便 tearDown 能够正常运行
+    // (虽然 tearDown 里的 nvm_allocator_destroy 也能处理 NULL，但保持状态一致是个好习惯)
+    int res = nvm_allocator_create(mock_nvm_base, TOTAL_NVM_SIZE);
+    TEST_ASSERT_EQUAL_INT(0, res);
+}
+
+
+// ============================================================================
+//                          新增：高压调试接口测试
+// ============================================================================
+
+void test_debug_print_pressure(void) {
+    printf("\n>>> [TEST START] High Pressure Visual Check for nvm_allocator_debug_print <<<\n");
+
+    // --- 场景设置 ---
+    // NVM_SLAB_SIZE = 2MB (2 * 1024 * 1024 bytes)
+    
+    // 1. 针对 4KB 对象 (SC_4K)
+    // 一个 Slab 能存: 2MB / 4KB = 512 个块
+    // 我们分配 600 个，这将强制使用 2 个 Slab (一个满的，一个存 88 个)
+    const int count_4k = 600;
+    const size_t size_4k = 4096;
+    void** ptrs_4k = (void**)malloc(sizeof(void*) * count_4k);
+    TEST_ASSERT_NOT_NULL(ptrs_4k);
+
+    printf("    [Step 1] Allocating %d objects of %zu bytes (spans 2 Slabs)...\n", count_4k, size_4k);
+    for (int i = 0; i < count_4k; i++) {
+        ptrs_4k[i] = nvm_malloc(size_4k);
+        TEST_ASSERT_NOT_NULL(ptrs_4k[i]);
+    }
+
+    // 2. 针对 64B 对象 (SC_64B)
+    // 分配少量小对象，增加哈希表的混杂度
+    const int count_64b = 100;
+    void** ptrs_64b = (void**)malloc(sizeof(void*) * count_64b);
+    TEST_ASSERT_NOT_NULL(ptrs_64b);
+
+    printf("    [Step 2] Allocating %d objects of 64 bytes...\n", count_64b);
+    for (int i = 0; i < count_64b; i++) {
+        ptrs_64b[i] = nvm_malloc(64);
+        TEST_ASSERT_NOT_NULL(ptrs_64b[i]);
+    }
+
+    // 3. 制造碎片 (Fragmentation)
+    // 在第一个 4KB Slab 中 (前 512 个对象)，释放掉所有偶数索引的对象。
+    // 这样该 Slab 的使用率应该变成 approx 256 / 512。
+    printf("    [Step 3] Creating fragmentation (freeing alternate 4KB objects)...\n");
+    for (int i = 0; i < 512; i += 2) {
+        nvm_free(ptrs_4k[i]);
+        ptrs_4k[i] = NULL; // 标记为空防止重复释放
+    }
+
+    // --- 执行打印 ---
+    // 预期观察结果：
+    // 1. 应该至少有 3 个 Slab 条目 (2 个用于 4KB，1 个用于 64B)。
+    // 2. 其中一个 4KB Slab 的 Usage 应该是 256/512 (或接近，取决于分配顺序)。
+    // 3. 另一个 4KB Slab 的 Usage 应该是 88/512 (600 - 512)。
+    // 4. 64B Slab 的 Usage 应该是 100/32768。
+    printf("\n    --- ALLOCATOR STATE DUMP START ---\n");
+    nvm_allocator_debug_print();
+    printf("    --- ALLOCATOR STATE DUMP END ---\n\n");
+
+    // --- 清理资源 ---
+    printf("    [Step 4] Cleaning up...\n");
+    for (int i = 0; i < count_4k; i++) {
+        if (ptrs_4k[i]) nvm_free(ptrs_4k[i]);
+    }
+    for (int i = 0; i < count_64b; i++) {
+        if (ptrs_64b[i]) nvm_free(ptrs_64b[i]);
+    }
+
+    free(ptrs_4k);
+    free(ptrs_64b);
+
+    printf(">>> [TEST END] High Pressure Visual Check <<<\n");
+}
+
+
 // ============================================================================
 //                          测试执行入口 (关键修改)
 // ============================================================================
@@ -189,6 +303,10 @@ int main(void) {
     RUN_TEST(test_parameter_and_error_handling);
     RUN_TEST(test_nvm_space_exhaustion);
     RUN_TEST(test_mixed_load_and_fragmentation);
+
+    RUN_TEST(test_debug_print_api);
+
+    RUN_TEST(test_debug_print_pressure);
 
     return UNITY_END();
 }
