@@ -177,14 +177,13 @@ NvmSlab* slab_hashtable_remove(SlabHashTable* table, uint64_t nvm_offset) {
 // ============================================================================
 //                          调试工具 API 实现
 // ============================================================================
-
 void slab_hashtable_print_layout(SlabHashTable* table, void* base_addr, bool verbose) {
     if (!table) {
         printf("[SlabHashTable] Table is NULL\n");
         return;
     }
 
-    // 加读锁
+    // 1. 加哈希表读锁，防止扩容或节点删除
     NVM_RWLOCK_READ_LOCK(&table->lock);
 
     printf("\n=== NVM Allocated Memory Dump ===\n");
@@ -198,47 +197,84 @@ void slab_hashtable_print_layout(SlabHashTable* table, void* base_addr, bool ver
         
         while (curr) {
             NvmSlab* slab = curr->slab_ptr;
-            // 防御性检查
             if (!slab) { curr = curr->next; continue; }
 
-            uint32_t b_size = slab->block_size;
-            uint32_t alloc_cnt = slab->allocated_block_count;
-            uint32_t total_cnt = slab->total_block_count;
+            // 为了读取准确的 cache 状态，我们需要持有 Slab 的锁
+            // 注意：这可能会短暂阻塞分配器，但对于调试打印是可以接受的
+            NVM_SPINLOCK_ACQUIRE(&slab->lock);
 
-            // 1. 打印 Slab 头部信息
+            uint32_t b_size = slab->block_size;
+            // allocated_block_count 是逻辑计数 (用户持有的)
+            // bitmap 是物理计数 (用户持有 + 缓存预取)
+            uint32_t logical_usage = slab->allocated_block_count; 
+            uint32_t total_cnt = slab->total_block_count;
+            uint32_t cached_count = slab->cache_count;
+            
+            // 复制关键的缓存信息出来，以便尽快释放锁（如果不想长时间持锁打印）
+            // 但为了打印逻辑简单，我们这里选择在持锁期间进行计算过滤，
+            // 考虑到打印本身就是慢操作，持锁也无妨。
+
             printf("----------------------------------------------------------------\n");
-            printf("[Slab #%u] Offset: 0x%-8llx | BlockSize: %-5u | Usage: %u/%u\n", 
+            printf("[Slab #%u] Offset: 0x%-8llx | BlockSize: %-5u | Usage: %u/%u (Cached: %u)\n", 
                    slab_counter++, 
                    (unsigned long long)curr->nvm_offset, 
                    b_size, 
-                   alloc_cnt, 
-                   total_cnt);
+                   logical_usage, 
+                   total_cnt,
+                   cached_count);
 
-            // 2. 如果开启详细模式且该 Slab 有分配对象，则遍历位图打印地址
-            if (verbose && alloc_cnt > 0) {
+            if (verbose && logical_usage > 0) {
                 printf("    Allocated Blocks (Index -> Address):\n");
                 
-                // 遍历位图
+                uint32_t printed_lines = 0;
+
+                // 遍历所有可能的块索引
                 for (uint32_t k = 0; k < total_cnt; k++) {
-                    if (CHECK_BIT(slab->bitmap, k)) {
-                        // --- 核心地址计算逻辑 ---
-                        // 1. 块在 Slab 内的偏移 = 索引 * 块大小
-                        uint64_t intra_slab_offset = k * b_size;
-                        // 2. 块在 NVM 中的总偏移 = Slab偏移 + Slab内偏移
+                    // 1. 检查位图：必须是物理上被占用的
+                    if (IS_BIT_SET(slab->bitmap, k)) {
+                        
+                        // 2. 检查是否在 Ring Buffer 缓存中 (预取块/空闲块)
+                        bool is_cached = false;
+                        for (uint32_t c = 0; c < slab->cache_count; c++) {
+                            // Ring Buffer 索引计算： (head + i) % SIZE
+                            uint32_t ring_idx = (slab->cache_head + c) % SLAB_CACHE_SIZE;
+                            if (slab->free_block_buffer[ring_idx] == k) {
+                                is_cached = true;
+                                break;
+                            }
+                        }
+
+                        // 如果在缓存里，说明它虽然位图是1，但不是用户的数据，跳过
+                        if (is_cached) {
+                            continue; 
+                        }
+
+                        // 3. 确认为用户持有，打印地址
+                        uint64_t intra_slab_offset = (uint64_t)k * b_size;
                         uint64_t total_offset = curr->nvm_offset + intra_slab_offset;
-                        // 3. 块的绝对虚拟地址 = NVM基地址 + 总偏移
                         void* block_addr = (char*)base_addr + total_offset;
 
                         printf("      [%3u] %p (Len: %u)\n", k, block_addr, b_size);
                         
                         total_objects_allocated++;
+                        printed_lines++;
                     }
                 }
-            } else if (alloc_cnt == 0) {
-                printf("    (Slab is Empty)\n");
+
+                // 双重校验：打印的行数应该等于逻辑使用量
+                if (printed_lines != logical_usage) {
+                     printf("      [WARNING] Displayed %u blocks, but logical usage is %u. (Consistency Check Fail)\n", 
+                            printed_lines, logical_usage);
+                }
+
+            } else if (logical_usage == 0) {
+                printf("    (Slab is legally empty, bitmap may have pre-fetches)\n");
             } else if (!verbose) {
-                printf("    (Details hidden, set verbose=true to see addresses)\n");
+                printf("    (Details hidden...)\n");
+                total_objects_allocated += logical_usage;
             }
+
+            NVM_SPINLOCK_RELEASE(&slab->lock); // 释放 Slab 锁
             
             curr = curr->next;
         }
@@ -247,8 +283,9 @@ void slab_hashtable_print_layout(SlabHashTable* table, void* base_addr, bool ver
     printf("=== End Dump: %u Slabs, %llu Total Objects ===\n\n", 
            slab_counter, (unsigned long long)total_objects_allocated);
 
-    NVM_RWLOCK_UNLOCK(&table->lock);
+    NVM_RWLOCK_UNLOCK(&table->lock); // 释放哈希表锁
 }
+
 
 // ============================================================================
 //                          内部函数实现

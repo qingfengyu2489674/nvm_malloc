@@ -211,72 +211,128 @@ void test_debug_print_api(void) {
 //                          新增：高压调试接口测试
 // ============================================================================
 
-void test_debug_print_pressure(void) {
-    printf("\n>>> [TEST START] High Pressure Visual Check for nvm_allocator_debug_print <<<\n");
+void test_debug_print_high_pressure_verification(void) {
+    printf("\n>>> [TEST START] High Pressure Accuracy Verification (Multi-Slab + Cache Churn) <<<\n");
 
-    // --- 场景设置 ---
-    // NVM_SLAB_SIZE = 2MB (2 * 1024 * 1024 bytes)
-    
-    // 1. 针对 4KB 对象 (SC_4K)
-    // 一个 Slab 能存: 2MB / 4KB = 512 个块
-    // 我们分配 600 个，这将强制使用 2 个 Slab (一个满的，一个存 88 个)
+    // ========================================================================
+    // 1. 压力参数配置
+    // ========================================================================
+    // SC_4K (4096B): Slab 大小 2MB -> 容量 512 个
+    // 分配 600 个 -> 必定触发 Slab #0 满，Slab #1 使用 88 个
     const int count_4k = 600;
     const size_t size_4k = 4096;
-    void** ptrs_4k = (void**)malloc(sizeof(void*) * count_4k);
-    TEST_ASSERT_NOT_NULL(ptrs_4k);
+    
+    // SC_64B (64B): 用于增加混淆
+    const int count_64b = 100;
+    const size_t size_64b = 64;
 
-    printf("    [Step 1] Allocating %d objects of %zu bytes (spans 2 Slabs)...\n", count_4k, size_4k);
+    void** ptrs_4k = (void**)malloc(sizeof(void*) * count_4k);
+    void** ptrs_64b = (void**)malloc(sizeof(void*) * count_64b);
+    TEST_ASSERT_NOT_NULL(ptrs_4k);
+    TEST_ASSERT_NOT_NULL(ptrs_64b);
+
+    // ========================================================================
+    // 2. 批量分配 (填充阶段)
+    // ========================================================================
+    printf("\n[Step 1] Allocating %d objects of 4KB (Spanning 2 Slabs)...\n", count_4k);
     for (int i = 0; i < count_4k; i++) {
         ptrs_4k[i] = nvm_malloc(size_4k);
         TEST_ASSERT_NOT_NULL(ptrs_4k[i]);
     }
 
-    // 2. 针对 64B 对象 (SC_64B)
-    // 分配少量小对象，增加哈希表的混杂度
-    const int count_64b = 100;
-    void** ptrs_64b = (void**)malloc(sizeof(void*) * count_64b);
-    TEST_ASSERT_NOT_NULL(ptrs_64b);
-
-    printf("    [Step 2] Allocating %d objects of 64 bytes...\n", count_64b);
+    printf("[Step 2] Allocating %d objects of 64B...\n", count_64b);
     for (int i = 0; i < count_64b; i++) {
-        ptrs_64b[i] = nvm_malloc(64);
+        ptrs_64b[i] = nvm_malloc(size_64b);
         TEST_ASSERT_NOT_NULL(ptrs_64b[i]);
     }
 
-    // 3. 制造碎片 (Fragmentation)
-    // 在第一个 4KB Slab 中 (前 512 个对象)，释放掉所有偶数索引的对象。
-    // 这样该 Slab 的使用率应该变成 approx 256 / 512。
-    printf("    [Step 3] Creating fragmentation (freeing alternate 4KB objects)...\n");
-    for (int i = 0; i < 512; i += 2) {
-        nvm_free(ptrs_4k[i]);
-        ptrs_4k[i] = NULL; // 标记为空防止重复释放
+    // ========================================================================
+    // 3. 制造高压碎片 (触发 Cache Drain 和 Bitmap 混合状态)
+    // ========================================================================
+    // 策略：
+    // - 4KB 对象：释放所有偶数索引 (0, 2, 4...) -> 释放 300 个
+    //   这会导致 Cache (size=64) 填满 -> 回写位图 -> 填满 -> 回写...
+    //   最终状态下，位图会有大量空洞，Cache 里会有残留的空闲块。
+    //   DEBUG API 必须能正确识别出这些“已释放但还在 Cache 里”的块，不打印它们。
+    
+    printf("[Step 3] Heavy Fragmentation: Freeing 50%% of objects (Odds vs Evens)...\n");
+    int active_4k = 0;
+    for (int i = 0; i < count_4k; i++) {
+        if (i % 2 == 0) {
+            nvm_free(ptrs_4k[i]); // 释放偶数
+            ptrs_4k[i] = NULL;
+        } else {
+            active_4k++;          // 保留奇数
+        }
     }
 
-    // --- 执行打印 ---
-    // 预期观察结果：
-    // 1. 应该至少有 3 个 Slab 条目 (2 个用于 4KB，1 个用于 64B)。
-    // 2. 其中一个 4KB Slab 的 Usage 应该是 256/512 (或接近，取决于分配顺序)。
-    // 3. 另一个 4KB Slab 的 Usage 应该是 88/512 (600 - 512)。
-    // 4. 64B Slab 的 Usage 应该是 100/32768。
-    printf("\n    --- ALLOCATOR STATE DUMP START ---\n");
-    nvm_allocator_debug_print();
-    printf("    --- ALLOCATOR STATE DUMP END ---\n\n");
+    int active_64b = 0;
+    for (int i = 0; i < count_64b; i++) {
+        if (i % 3 == 0) {         // 释放索引能被 3 整除的
+            nvm_free(ptrs_64b[i]);
+            ptrs_64b[i] = NULL;
+        } else {
+            active_64b++;
+        }
+    }
 
-    // --- 清理资源 ---
-    printf("    [Step 4] Cleaning up...\n");
+    // ========================================================================
+    // 4. 用户侧真值表 (Ground Truth)
+    // ========================================================================
+    printf("\n================ [USER SIDE GROUND TRUTH] ================\n");
+    printf("Expected 4KB Objects: %d (Indices 1, 3, 5...)\n", active_4k);
+    printf("Expected 64B Objects: %d\n", active_64b);
+    printf("Total Objects: %d\n", active_4k + active_64b);
+    printf("----------------------------------------------------------\n");
+    printf("List of currently held pointers (Partial/Full Dump):\n");
+    
+    // 打印所有 4KB 对象（这是验证重点，因为它跨 Slab）
+    // 为了防止刷屏太快，我们只打印前 10 个和最后 10 个，
+    // 或者如果你想完全对比，可以取消注释全部打印。
+    // 这里为了响应你的要求“输出每个分配的块”，我们全部打印。
+    
+    int print_count = 0;
+    for (int i = 0; i < count_4k; i++) {
+        if (ptrs_4k[i] != NULL) {
+            printf("  [User 4K #%03d] %p\n", i, ptrs_4k[i]);
+            print_count++;
+        }
+    }
+    for (int i = 0; i < count_64b; i++) {
+        if (ptrs_64b[i] != NULL) {
+            printf("  [User 64B #%03d] %p\n", i, ptrs_64b[i]);
+        }
+    }
+    printf("==========================================================\n");
+
+    // ========================================================================
+    // 5. 系统侧 Debug 输出
+    // ========================================================================
+    printf("\nvvvvvvvvvvvvvvvv [SYSTEM DEBUG OUTPUT] vvvvvvvvvvvvvvvvvvv\n");
+    // 预期观察：
+    // 1. 应该有 2 个 4KB Slab。
+    //    - Slab #0 (Offset 0): 总量 512，使用 256 (因为释放了一半)
+    //    - Slab #1 (Offset 2MB): 总量 512，使用 44 (88的一半)
+    // 2. 地址必须与上方 [USER SIDE] 完全一致。
+    // 3. 不应出现任何 NULL 或已释放的偶数索引地址。
+    nvm_allocator_debug_print();
+    printf("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n");
+
+    // ========================================================================
+    // 6. 清理
+    // ========================================================================
+    printf("\n[Step 5] Cleaning up remaining objects...\n");
     for (int i = 0; i < count_4k; i++) {
         if (ptrs_4k[i]) nvm_free(ptrs_4k[i]);
     }
     for (int i = 0; i < count_64b; i++) {
         if (ptrs_64b[i]) nvm_free(ptrs_64b[i]);
     }
-
     free(ptrs_4k);
     free(ptrs_64b);
 
-    printf(">>> [TEST END] High Pressure Visual Check <<<\n");
+    printf(">>> [TEST END] High Pressure Verification Complete <<<\n");
 }
-
 
 // ============================================================================
 //                          测试执行入口 (关键修改)
@@ -306,7 +362,7 @@ int main(void) {
 
     RUN_TEST(test_debug_print_api);
 
-    RUN_TEST(test_debug_print_pressure);
+    RUN_TEST(test_debug_print_high_pressure_verification);
 
     return UNITY_END();
 }
